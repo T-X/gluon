@@ -14,7 +14,7 @@ PKG_CONFIG_DEPENDS += $(GLUON_I18N_CONFIG)
 define Package/gluon-alt-esc-provider
   SECTION:=gluon
   CATEGORY:=Gluon
-  DEPENDS:=+gluon-web-admin
+  DEPENDS:=+gluon-web-admin +ip6tables-mod-nat
   TITLE:=Gluon Alternative Exit Service Collaborator - Provider
 endef
 
