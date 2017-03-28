@@ -46,9 +46,10 @@ setup_onlink_prefixes() {
 }
 
 start() {
-	local exit4=`uci get gluon-alt-esc-client.@client[0].exit4 2> /dev/null`
-	local exit6=`uci get gluon-alt-esc-client.@client[0].exit6 2> /dev/null`
-	local disabled=`uci get gluon-alt-esc-client.@client[0].disabled 2> /dev/null`
+	local exit4="`uci get gluon-alt-esc-client.@client[0].exit4 2> /dev/null | tr 'A-Z' 'a-z'`"
+	local exit6="`uci get gluon-alt-esc-client.@client[0].exit6 2> /dev/null | tr 'A-Z' 'a-z'`"
+	local ownmac="`uci get network.client.macaddr 2> /dev/null | tr 'A-Z' 'a-z'`"
+	local disabled="`uci get gluon-alt-esc-client.@client[0].disabled 2> /dev/null`"
 
 	get_ifnames
 	stop
@@ -61,11 +62,21 @@ start() {
 	setup_onlink_prefixes
 
 
-	[ -n "$exit4" ] && \
-		ebtables -t nat -A ALT_ESC_DNAT -p IPv4 -j dnat --to-dst "$exit4" --dnat-target ACCEPT
-	[ -n "$exit6" ] && \
-		ebtables -t nat -A ALT_ESC_DNAT -p IPv6 -j dnat --to-dst "$exit6" --dnat-target ACCEPT
+	[ -n "$exit4" ] && {
+		if [ "$ownmac" = "$exit4" ]; then
+			ebtables -t nat -A ALT_ESC_DNAT -p IPv4 -j redirect --redirect-target ACCEPT
+		else
+			ebtables -t nat -A ALT_ESC_DNAT -p IPv4 -j dnat --to-dst "$exit4" --dnat-target ACCEPT
+		fi
+	}
 
+	[ -n "$exit6" ] && {
+		if [ "$ownmac" = "$exit6" ]; then
+			ebtables -t nat -A ALT_ESC_DNAT -p IPv6 -j redirect --redirect-target ACCEPT
+		else
+			ebtables -t nat -A ALT_ESC_DNAT -p IPv6 -j dnat --to-dst "$exit6" --dnat-target ACCEPT
+		fi
+	}
 }
 
 stop() {
