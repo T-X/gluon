@@ -43,6 +43,7 @@ function f:write(self, state, data)
 
     uci:delete('firewall', 'client2wan')
     uci:delete('firewall', 'wan2client')
+    uci:delete('firewall', 'wan_nat6')
   else
     disabled = "0"
 
@@ -56,6 +57,13 @@ function f:write(self, state, data)
                 {
                   src = 'wan',
                   dest = 'client',
+                }
+    )
+    uci:section('firewall', 'include', 'wan_nat6',
+                {
+                  family = 'ipv6',
+                  type = 'restore',
+                  path = '/lib/gluon/firewall.wan-nat6',
                 }
     )
   end
