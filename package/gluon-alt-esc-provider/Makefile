@@ -27,14 +27,12 @@ endef
 
 define Build/Compile
 	$(call GluonBuildI18N,gluon-alt-esc-provider,i18n)
+	$(call GluonSrcDiet,./luasrc,$(PKG_BUILD_DIR)/luadest/)
 endef
-#	$(call GluonSrcDiet,./luasrc,$(PKG_BUILD_DIR)/luadest/)
 
 define Package/gluon-alt-esc-provider/install
 	$(CP) ./files/* $(1)/
-	$(CP) ./luasrc/* $(1)/
+	$(CP) $(PKG_BUILD_DIR)/luadest/* $(1)/
 endef
-#	$(call GluonInstallI18N,gluon-alt-esc-provider,$(1))
-#	$(CP) $(PKG_BUILD_DIR)/luadest/* $(1)/
 
 $(eval $(call BuildPackage,gluon-alt-esc-provider))
