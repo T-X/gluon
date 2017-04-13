@@ -26,8 +26,8 @@ setup_onlink_prefixes() {
 	json_load "$(cat /lib/gluon/site.json)"
 	json_get_var prefix4 prefix4
 	json_get_var prefix6 prefix6
-	json_get_values extra_prefix4 extra_prefix4
-	json_get_values extra_prefix6 extra_prefix6
+	json_get_values extra_prefixes4 extra_prefixes4
+	json_get_values extra_prefixes6 extra_prefixes6
 
 	if [ -n "$1" ]; then
 		M="$1"
@@ -37,10 +37,10 @@ setup_onlink_prefixes() {
 		OUT=""
 	fi
 
-	for p4 in $prefix4 $extra_prefix4; do
+	for p4 in $prefix4 $extra_prefixes4; do
 		eval ebtables -t nat "$M" ALT_ESC_OFFLINK -p IPv4 --ip-dst $p4 -j RETURN $OUT
 	done
-	for p6 in $prefix6 $extra_prefix6; do
+	for p6 in $prefix6 $extra_prefixes6; do
 		eval ebtables -t nat "$M" ALT_ESC_OFFLINK -p IPv6 --ip6-dst $p6 -j RETURN $OUT
 	done
 }
