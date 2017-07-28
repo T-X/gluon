@@ -40,8 +40,6 @@ config '# CONFIG_PACKAGE_kmod-jool is not set' -- fails to build
 config 'CONFIG_BUSYBOX_CUSTOM=y'
 config '# CONFIG_BUSYBOX_CONFIG_FEATURE_PREFER_IPV4_ADDRESS is not set'
 
-config '# CONFIG_BATMAN_ADV_MCAST is not set'
-
 config 'CONFIG_PACKAGE_ATH_DEBUG=y'
 
 if env.GLUON_TARGET ~= 'ramips-rt305x' and env.GLUON_TARGET ~= 'ar71xx-tiny' then
