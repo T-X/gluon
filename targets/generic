@@ -58,6 +58,12 @@ if envtrue.GLUON_DEBUG then
 	config '# CONFIG_USE_SSTRIP is not set'
 end
 
+if envtrue.GLUON_DEBUG_BATMAN then
+	config 'CONFIG_BATMAN_ADV_DEBUG=y'
+	config 'CONFIG_BATMAN_ADV_TRACING=y'
+	config 'CONFIG_PACKAGE_trace-cmd=y'
+end
+
 
 packages {
 	'-odhcpd-ipv6only',
