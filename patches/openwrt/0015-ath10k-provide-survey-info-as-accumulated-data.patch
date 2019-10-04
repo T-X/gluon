@@ -1,0 +1,680 @@
+From: Sven Eckelmann <sven@narfation.org>
+Date: Fri, 4 Oct 2019 18:57:26 +0200
+Subject: ath10k: provide survey info as accumulated data
+
+It was observed that ath9k provides accumulated survey counters but ath10k
+neither provides deltas nor accumulated counters. Instead it returns some
+value which was returned at some point from the firmware.
+
+But as it turns out, this data is not reliable. To make it more useful,
+ath10k has to:
+
+* retrieve counters rather frequently for hardware which is known to use
+  firmware versions with low number counter bits (for only 14-30s)
+* clean up received counter values
+* accumulate counters from firmware
+
+diff --git a/package/kernel/ath10k-ct/patches/9585-ath10k-report-survey-info-as-accumulated-values.patch b/package/kernel/ath10k-ct/patches/9585-ath10k-report-survey-info-as-accumulated-values.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..3c751c9507cc44c6e9bef4a62029a4206cac03a4
+--- /dev/null
++++ b/package/kernel/ath10k-ct/patches/9585-ath10k-report-survey-info-as-accumulated-values.patch
+@@ -0,0 +1,171 @@
++From: Sven Eckelmann <seckelmann@datto.com>
++Date: Wed, 18 Sep 2019 14:42:58 +0200
++Subject: ath10k: report survey info as accumulated values
++
++The survey report is expected to contain a counter which is increasing all
++the time. But ath10k reports some kind of delta. This can either be the
++difference to the last get_survey or the difference to some even older
++get_survey because the values are sometimes cached and sometimes
++overwritten.
++
++To make the returned values useful, they must be accumulated manually by
++ath10k before send out to the upper layers. Special care must be taken when
++accepting values from older firmware versions (which use
++ATH10K_HW_CC_WRAP_SHIFTED_ALL) because they will not clear the cycle_busy
++and cycle_total counter and will only use 31 bit of the 64 but counter.
++
++Tested on QCA988x hw2.0 10.2.4-1.0-00043
++Tested on QCA99x0 hw2.0 10.4.1.00030-1
++Tested in QCA4019 hw1.0 10.4-3.5.3-00057
++
++Signed-off-by: Sven Eckelmann <seckelmann@datto.com>
++
++diff --git a/ath10k-4.19/core.h b/ath10k-4.19/core.h
++index a33ecded9337993ceef11c4c0c08d355283b33eb..9c7852ea49710e0c9b22373bc151b05894606c34 100644
++--- a/ath10k-4.19/core.h
+++++ b/ath10k-4.19/core.h
++@@ -1343,6 +1343,8 @@ struct ath10k {
++ 	u32 survey_last_rx_clear_count;
++ 	u32 survey_last_cycle_count;
++ 	struct survey_info survey[ATH10K_NUM_CHANS];
+++	u64 survey_last_total_cc[ATH10K_NUM_CHANS];
+++	u64 survey_last_busy_cc[ATH10K_NUM_CHANS];
++ 
++ 	/* Channel info events are expected to come in pairs without and with
++ 	 * COMPLETE flag set respectively for each channel visit during scan.
++diff --git a/ath10k-4.19/hw.c b/ath10k-4.19/hw.c
++index d1d7fc5dd0960b4d5cc7a6c109bd78f50f8ddc53..ce5df3f7c7929ab07053f3e9d050db514ea01553 100644
++--- a/ath10k-4.19/hw.c
+++++ b/ath10k-4.19/hw.c
++@@ -556,9 +556,10 @@ void ath10k_hw_fill_survey_time(struct ath10k *ar, struct survey_info *survey,
++ 	u32 cc_fix = 0;
++ 	u32 rcc_fix = 0;
++ 	enum ath10k_hw_cc_wraparound_type wraparound_type;
+++	u32 filled = 0;
++ 
++-	survey->filled |= SURVEY_INFO_TIME |
++-			  SURVEY_INFO_TIME_BUSY;
+++	filled |= SURVEY_INFO_TIME |
+++		  SURVEY_INFO_TIME_BUSY;
++ 
++ 	wraparound_type = ar->hw_params.cc_wraparound_type;
++ 
++@@ -567,7 +568,7 @@ void ath10k_hw_fill_survey_time(struct ath10k *ar, struct survey_info *survey,
++ 		case ATH10K_HW_CC_WRAP_SHIFTED_ALL:
++ 			if (cc < cc_prev) {
++ 				cc_fix = 0x7fffffff;
++-				survey->filled &= ~SURVEY_INFO_TIME_BUSY;
+++				filled &= ~SURVEY_INFO_TIME_BUSY;
++ 			}
++ 			break;
++ 		case ATH10K_HW_CC_WRAP_SHIFTED_EACH:
++@@ -585,8 +586,10 @@ void ath10k_hw_fill_survey_time(struct ath10k *ar, struct survey_info *survey,
++ 	cc -= cc_prev - cc_fix;
++ 	rcc -= rcc_prev - rcc_fix;
++ 
++-	survey->time = CCNT_TO_MSEC(ar, cc);
++-	survey->time_busy = CCNT_TO_MSEC(ar, rcc);
+++	survey->filled |= filled;
+++	survey->time += CCNT_TO_MSEC(ar, cc);
+++	if (survey->filled & SURVEY_INFO_TIME_BUSY)
+++		survey->time_busy += CCNT_TO_MSEC(ar, rcc);
++ }
++ 
++ /* The stock firmware does not support setting the coverage class. Instead this
++diff --git a/ath10k-4.19/wmi.c b/ath10k-4.19/wmi.c
++index 165694b61880a0d32d41e72b9ca95929a42016aa..db64cb545c369f49e72f771fa63115aa7af6eef9 100644
++--- a/ath10k-4.19/wmi.c
+++++ b/ath10k-4.19/wmi.c
++@@ -6032,10 +6032,38 @@ exit:
++ 	spin_unlock_bh(&ar->data_lock);
++ }
++ 
+++static void ath10k_clean_survey(struct ath10k *ar, struct survey_info *survey,
+++				int idx, u64 total, u64 busy)
+++{
+++	u32 total_diff;
+++	u32 busy_diff;
+++
+++	lockdep_assert_held(&ar->data_lock);
+++
+++	if (ar->hw_params.cc_wraparound_type != ATH10K_HW_CC_WRAP_SHIFTED_ALL)
+++		return;
+++
+++	if (total < ar->survey_last_total_cc[idx]) {
+++		total_diff = total + 0x7fffffff - ar->survey_last_total_cc[idx];
+++		busy_diff = 0;
+++		survey->filled &= ~SURVEY_INFO_TIME_BUSY;
+++	} else {
+++		total_diff = total - ar->survey_last_total_cc[idx];
+++		busy_diff = busy - ar->survey_last_busy_cc[idx];
+++	}
+++
+++	survey->time      = CCNT_TO_MSEC(ar, total_diff);
+++	survey->time_busy = CCNT_TO_MSEC(ar, busy_diff);
+++
+++	ar->survey_last_total_cc[idx] = total;
+++	ar->survey_last_busy_cc[idx] = busy;
+++}
+++
++ static int ath10k_wmi_event_pdev_bss_chan_info(struct ath10k *ar,
++ 					       struct sk_buff *skb)
++ {
++ 	struct wmi_pdev_bss_chan_info_event *ev;
+++	struct survey_info survey_tmp = {};
++ 	struct survey_info *survey;
++ 	u64 busy, total, tx, rx, rx_bss;
++ 	u32 freq, noise_floor;
++@@ -6058,6 +6086,13 @@ static int ath10k_wmi_event_pdev_bss_chan_info(struct ath10k *ar,
++ 		   "wmi event pdev bss chan info:\n freq: %d noise: %d cycle: busy %llu total %llu tx %llu rx %llu rx_bss %llu\n",
++ 		   freq, noise_floor, busy, total, tx, rx, rx_bss);
++ 
+++	/* everything zero means invalid data
+++	 * -> drop it to avoid bogus noisefloor in survey report
+++	 */
+++	if (noise_floor == 0 && busy == 0 && total == 0 && tx == 0 && rx == 0 &&
+++	    rx_bss == 0)
+++		return -EPROTO;
+++
++ 	spin_lock_bh(&ar->data_lock);
++ 	idx = freq_to_idx(ar, freq);
++ 	if (idx >= ARRAY_SIZE(ar->survey)) {
++@@ -6066,18 +6101,29 @@ static int ath10k_wmi_event_pdev_bss_chan_info(struct ath10k *ar,
++ 		goto exit;
++ 	}
++ 
+++	/* create delta result - might need fix of counters */
+++	survey_tmp.noise     = noise_floor;
+++	survey_tmp.time      = div_u64(total, cc_freq_hz);
+++	survey_tmp.time_busy = div_u64(busy, cc_freq_hz);
+++	survey_tmp.time_rx   = div_u64(rx_bss, cc_freq_hz);
+++	survey_tmp.time_tx   = div_u64(tx, cc_freq_hz);
+++	survey_tmp.filled    = (SURVEY_INFO_NOISE_DBM |
+++				SURVEY_INFO_TIME |
+++				SURVEY_INFO_TIME_BUSY |
+++				SURVEY_INFO_TIME_RX |
+++				SURVEY_INFO_TIME_TX);
+++
+++	ath10k_clean_survey(ar, &survey_tmp, idx, total, busy);
+++
+++	/* create accumulated result */
++ 	survey = &ar->survey[idx];
++ 
++-	survey->noise     = noise_floor;
++-	survey->time      = div_u64(total, cc_freq_hz);
++-	survey->time_busy = div_u64(busy, cc_freq_hz);
++-	survey->time_rx   = div_u64(rx_bss, cc_freq_hz);
++-	survey->time_tx   = div_u64(tx, cc_freq_hz);
++-	survey->filled   |= (SURVEY_INFO_NOISE_DBM |
++-			     SURVEY_INFO_TIME |
++-			     SURVEY_INFO_TIME_BUSY |
++-			     SURVEY_INFO_TIME_RX |
++-			     SURVEY_INFO_TIME_TX);
+++	survey->noise      = survey_tmp.noise;
+++	survey->time      += survey_tmp.time;
+++	survey->time_busy += survey_tmp.time_busy;
+++	survey->time_rx   += survey_tmp.time_rx;
+++	survey->time_tx   += survey_tmp.time_tx;
+++	survey->filled    |= survey_tmp.filled;
++ exit:
++ 	spin_unlock_bh(&ar->data_lock);
++ 	complete(&ar->bss_survey_done);
+diff --git a/package/kernel/ath10k-ct/patches/9586-ath10k-regularly-fetch-survey-counters.patch b/package/kernel/ath10k-ct/patches/9586-ath10k-regularly-fetch-survey-counters.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..9cae40018051ff381fa5c218cfd36256293973f2
+--- /dev/null
++++ b/package/kernel/ath10k-ct/patches/9586-ath10k-regularly-fetch-survey-counters.patch
+@@ -0,0 +1,149 @@
++From: Sven Eckelmann <seckelmann@datto.com>
++Date: Wed, 18 Sep 2019 14:42:59 +0200
++Subject: ath10k: regularly fetch survey counters
++
++The survey counters from firmwares like 10.2.4 are not actually using the
++full 64 bit. Instead, they only use the lower 31 bit and overflow ever
++14-30s. The driver must frequently fetch the survey data and add it to the
++survey data storage to avoid this problem and to present meaningful values
++to the caller of .get_survey.
++
++It is assumed for now that only the current rx_channel retrieves relevant
++updates for the survey data. This should avoid that the bss channel survey
++request times out too often.
++
++Tested on QCA988x hw2.0 10.2.4-1.0-00043
++
++Signed-off-by: Sven Eckelmann <seckelmann@datto.com>
++
++diff --git a/ath10k-4.19/core.c b/ath10k-4.19/core.c
++index 630ba873d2a685ca3737b8c2b798d4258e1e0526..710d075119d076ae39acb6c0721a5c3cf41aae0d 100644
++--- a/ath10k-4.19/core.c
+++++ b/ath10k-4.19/core.c
++@@ -3177,8 +3177,14 @@ int ath10k_core_start(struct ath10k *ar, enum ath10k_firmware_mode mode,
++ 	if (status)
++ 		goto err_hif_stop;
++ 
+++	status = ath10k_survey_start(ar);
+++	if (status)
+++		goto err_debug_stop;
+++
++ 	return 0;
++ 
+++err_debug_stop:
+++	ath10k_debug_stop(ar);
++ err_hif_stop:
++ 	ath10k_hif_stop(ar);
++ err_htt_rx_detach:
++@@ -3218,6 +3224,7 @@ int ath10k_wait_for_suspend(struct ath10k *ar, u32 suspend_opt)
++ void ath10k_core_stop(struct ath10k *ar)
++ {
++ 	lockdep_assert_held(&ar->conf_mutex);
+++	ath10k_survey_stop(ar);
++ 	ath10k_debug_stop(ar);
++ 
++ 	/* try to suspend target */
++@@ -3601,6 +3608,7 @@ struct ath10k *ath10k_core_create(size_t priv_size, struct device *dev,
++ 	init_completion(&ar->bss_survey_done);
++ 
++ 	INIT_DELAYED_WORK(&ar->scan.timeout, ath10k_scan_timeout_work);
+++	INIT_DELAYED_WORK(&ar->survey_dwork, ath10k_survey_dwork);
++ 
++ 	ar->workqueue = create_singlethread_workqueue("ath10k_wq");
++ 	if (!ar->workqueue)
++diff --git a/ath10k-4.19/core.h b/ath10k-4.19/core.h
++index 9c7852ea49710e0c9b22373bc151b05894606c34..6b8b7364c7925e8a55a6b88db31844b4ef7338a1 100644
++--- a/ath10k-4.19/core.h
+++++ b/ath10k-4.19/core.h
++@@ -1345,6 +1345,7 @@ struct ath10k {
++ 	struct survey_info survey[ATH10K_NUM_CHANS];
++ 	u64 survey_last_total_cc[ATH10K_NUM_CHANS];
++ 	u64 survey_last_busy_cc[ATH10K_NUM_CHANS];
+++	struct delayed_work survey_dwork;
++ 
++ 	/* Channel info events are expected to come in pairs without and with
++ 	 * COMPLETE flag set respectively for each channel visit during scan.
++diff --git a/ath10k-4.19/mac.c b/ath10k-4.19/mac.c
++index 39d1d51dc0eb018ecb0f5a46ebfbc278ce136b2f..3c025bc303428a0531fa07742283178dc18ce69d 100644
++--- a/ath10k-4.19/mac.c
+++++ b/ath10k-4.19/mac.c
++@@ -37,6 +37,9 @@
++ #include "wow.h"
++ #include "leds.h"
++ 
+++/* ms */
+++#define ATH10K_SURVEY_INTERVAL 10000
+++
++ /*********/
++ /* Rates */
++ /*********/
++@@ -7983,6 +7986,55 @@ ath10k_mac_update_bss_chan_survey(struct ath10k *ar,
++ 	}
++ }
++ 
+++static void ath10k_request_survey(struct ath10k *ar)
+++{
+++	lockdep_assert_held(&ar->conf_mutex);
+++
+++	if (ar->state != ATH10K_STATE_ON)
+++		return;
+++
+++	if (!ar->rx_channel)
+++		return;
+++
+++	ath10k_mac_update_bss_chan_survey(ar, ar->rx_channel);
+++}
+++
+++void ath10k_survey_dwork(struct work_struct *work)
+++{
+++	struct ath10k *ar = container_of(work, struct ath10k,
+++					 survey_dwork.work);
+++
+++	mutex_lock(&ar->conf_mutex);
+++	ath10k_request_survey(ar);
+++	mutex_unlock(&ar->conf_mutex);
+++
+++	queue_delayed_work(ar->workqueue, &ar->survey_dwork,
+++			   msecs_to_jiffies(ATH10K_SURVEY_INTERVAL));
+++}
+++
+++int ath10k_survey_start(struct ath10k *ar)
+++{
+++	lockdep_assert_held(&ar->conf_mutex);
+++
+++	if (ar->hw_params.cc_wraparound_type != ATH10K_HW_CC_WRAP_SHIFTED_ALL)
+++		return 0;
+++
+++	queue_delayed_work(ar->workqueue, &ar->survey_dwork,
+++			   msecs_to_jiffies(ATH10K_SURVEY_INTERVAL));
+++
+++	return 0;
+++}
+++
+++void ath10k_survey_stop(struct ath10k *ar)
+++{
+++	lockdep_assert_held(&ar->conf_mutex);
+++
+++	if (ar->hw_params.cc_wraparound_type != ATH10K_HW_CC_WRAP_SHIFTED_ALL)
+++		return;
+++
+++	cancel_delayed_work_sync(&ar->survey_dwork);
+++}
+++
++ static int ath10k_get_survey(struct ieee80211_hw *hw, int idx,
++ 			     struct survey_info *survey)
++ {
++diff --git a/ath10k-4.19/mac.h b/ath10k-4.19/mac.h
++index 841635b26dedcb476e366cf67338b82301de805a..2ab4ec7bf0d6d54f33401aee7e64cfa9ba7e9119 100644
++--- a/ath10k-4.19/mac.h
+++++ b/ath10k-4.19/mac.h
++@@ -60,6 +60,9 @@ void ath10k_offchan_tx_purge(struct ath10k *ar);
++ void ath10k_offchan_tx_work(struct work_struct *work);
++ void ath10k_mgmt_over_wmi_tx_purge(struct ath10k *ar);
++ void ath10k_mgmt_over_wmi_tx_work(struct work_struct *work);
+++void ath10k_survey_dwork(struct work_struct *work);
+++int ath10k_survey_start(struct ath10k *ar);
+++void ath10k_survey_stop(struct ath10k *ar);
++ void ath10k_halt(struct ath10k *ar);
++ void ath10k_mac_vif_beacon_free(struct ath10k_vif *arvif);
++ void ath10k_drain_tx(struct ath10k *ar);
+diff --git a/package/kernel/mac80211/patches/ath/9585-ath10k-report-survey-info-as-accumulated-values.patch b/package/kernel/mac80211/patches/ath/9585-ath10k-report-survey-info-as-accumulated-values.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..1aa7eeab49ddfc14ab73ae9b6ef4fc0044ce1885
+--- /dev/null
++++ b/package/kernel/mac80211/patches/ath/9585-ath10k-report-survey-info-as-accumulated-values.patch
+@@ -0,0 +1,171 @@
++From: Sven Eckelmann <seckelmann@datto.com>
++Date: Wed, 18 Sep 2019 14:42:58 +0200
++Subject: ath10k: report survey info as accumulated values
++
++The survey report is expected to contain a counter which is increasing all
++the time. But ath10k reports some kind of delta. This can either be the
++difference to the last get_survey or the difference to some even older
++get_survey because the values are sometimes cached and sometimes
++overwritten.
++
++To make the returned values useful, they must be accumulated manually by
++ath10k before send out to the upper layers. Special care must be taken when
++accepting values from older firmware versions (which use
++ATH10K_HW_CC_WRAP_SHIFTED_ALL) because they will not clear the cycle_busy
++and cycle_total counter and will only use 31 bit of the 64 but counter.
++
++Tested on QCA988x hw2.0 10.2.4-1.0-00043
++Tested on QCA99x0 hw2.0 10.4.1.00030-1
++Tested in QCA4019 hw1.0 10.4-3.5.3-00057
++
++Signed-off-by: Sven Eckelmann <seckelmann@datto.com>
++
++diff --git a/drivers/net/wireless/ath/ath10k/core.h b/drivers/net/wireless/ath/ath10k/core.h
++index 0b77f982ec5a2a1c5b0753f439adc92fa6e8dab3..d937ec987b28be5db0dee8e9c757ca414cf7a205 100644
++--- a/drivers/net/wireless/ath/ath10k/core.h
+++++ b/drivers/net/wireless/ath/ath10k/core.h
++@@ -1057,6 +1057,8 @@ struct ath10k {
++ 	u32 survey_last_rx_clear_count;
++ 	u32 survey_last_cycle_count;
++ 	struct survey_info survey[ATH10K_NUM_CHANS];
+++	u64 survey_last_total_cc[ATH10K_NUM_CHANS];
+++	u64 survey_last_busy_cc[ATH10K_NUM_CHANS];
++ 
++ 	/* Channel info events are expected to come in pairs without and with
++ 	 * COMPLETE flag set respectively for each channel visit during scan.
++diff --git a/drivers/net/wireless/ath/ath10k/hw.c b/drivers/net/wireless/ath/ath10k/hw.c
++index 476e0535f06f0ca6745b0f43bd6c3a5fd78247fe..6a40f109a1e7377168fd4cb4907e877c567b8256 100644
++--- a/drivers/net/wireless/ath/ath10k/hw.c
+++++ b/drivers/net/wireless/ath/ath10k/hw.c
++@@ -556,9 +556,10 @@ void ath10k_hw_fill_survey_time(struct ath10k *ar, struct survey_info *survey,
++ 	u32 cc_fix = 0;
++ 	u32 rcc_fix = 0;
++ 	enum ath10k_hw_cc_wraparound_type wraparound_type;
+++	u32 filled = 0;
++ 
++-	survey->filled |= SURVEY_INFO_TIME |
++-			  SURVEY_INFO_TIME_BUSY;
+++	filled |= SURVEY_INFO_TIME |
+++		  SURVEY_INFO_TIME_BUSY;
++ 
++ 	wraparound_type = ar->hw_params.cc_wraparound_type;
++ 
++@@ -567,7 +568,7 @@ void ath10k_hw_fill_survey_time(struct ath10k *ar, struct survey_info *survey,
++ 		case ATH10K_HW_CC_WRAP_SHIFTED_ALL:
++ 			if (cc < cc_prev) {
++ 				cc_fix = 0x7fffffff;
++-				survey->filled &= ~SURVEY_INFO_TIME_BUSY;
+++				filled &= ~SURVEY_INFO_TIME_BUSY;
++ 			}
++ 			break;
++ 		case ATH10K_HW_CC_WRAP_SHIFTED_EACH:
++@@ -585,8 +586,10 @@ void ath10k_hw_fill_survey_time(struct ath10k *ar, struct survey_info *survey,
++ 	cc -= cc_prev - cc_fix;
++ 	rcc -= rcc_prev - rcc_fix;
++ 
++-	survey->time = CCNT_TO_MSEC(ar, cc);
++-	survey->time_busy = CCNT_TO_MSEC(ar, rcc);
+++	survey->filled |= filled;
+++	survey->time += CCNT_TO_MSEC(ar, cc);
+++	if (survey->filled & SURVEY_INFO_TIME_BUSY)
+++		survey->time_busy += CCNT_TO_MSEC(ar, rcc);
++ }
++ 
++ /* The firmware does not support setting the coverage class. Instead this
++diff --git a/drivers/net/wireless/ath/ath10k/wmi.c b/drivers/net/wireless/ath/ath10k/wmi.c
++index 9733c7743e409f07e1b6bc2e71e494f97bd0e0b3..f096ae1206e9485366bc24dc49e13e5c79b25857 100644
++--- a/drivers/net/wireless/ath/ath10k/wmi.c
+++++ b/drivers/net/wireless/ath/ath10k/wmi.c
++@@ -5518,10 +5518,38 @@ static int ath10k_wmi_event_temperature(struct ath10k *ar, struct sk_buff *skb)
++ 	return 0;
++ }
++ 
+++static void ath10k_clean_survey(struct ath10k *ar, struct survey_info *survey,
+++				int idx, u64 total, u64 busy)
+++{
+++	u32 total_diff;
+++	u32 busy_diff;
+++
+++	lockdep_assert_held(&ar->data_lock);
+++
+++	if (ar->hw_params.cc_wraparound_type != ATH10K_HW_CC_WRAP_SHIFTED_ALL)
+++		return;
+++
+++	if (total < ar->survey_last_total_cc[idx]) {
+++		total_diff = total + 0x7fffffff - ar->survey_last_total_cc[idx];
+++		busy_diff = 0;
+++		survey->filled &= ~SURVEY_INFO_TIME_BUSY;
+++	} else {
+++		total_diff = total - ar->survey_last_total_cc[idx];
+++		busy_diff = busy - ar->survey_last_busy_cc[idx];
+++	}
+++
+++	survey->time      = CCNT_TO_MSEC(ar, total_diff);
+++	survey->time_busy = CCNT_TO_MSEC(ar, busy_diff);
+++
+++	ar->survey_last_total_cc[idx] = total;
+++	ar->survey_last_busy_cc[idx] = busy;
+++}
+++
++ static int ath10k_wmi_event_pdev_bss_chan_info(struct ath10k *ar,
++ 					       struct sk_buff *skb)
++ {
++ 	struct wmi_pdev_bss_chan_info_event *ev;
+++	struct survey_info survey_tmp = {};
++ 	struct survey_info *survey;
++ 	u64 busy, total, tx, rx, rx_bss;
++ 	u32 freq, noise_floor;
++@@ -5544,6 +5572,13 @@ static int ath10k_wmi_event_pdev_bss_chan_info(struct ath10k *ar,
++ 		   "wmi event pdev bss chan info:\n freq: %d noise: %d cycle: busy %llu total %llu tx %llu rx %llu rx_bss %llu\n",
++ 		   freq, noise_floor, busy, total, tx, rx, rx_bss);
++ 
+++	/* everything zero means invalid data
+++	 * -> drop it to avoid bogus noisefloor in survey report
+++	 */
+++	if (noise_floor == 0 && busy == 0 && total == 0 && tx == 0 && rx == 0 &&
+++	    rx_bss == 0)
+++		return -EPROTO;
+++
++ 	spin_lock_bh(&ar->data_lock);
++ 	idx = freq_to_idx(ar, freq);
++ 	if (idx >= ARRAY_SIZE(ar->survey)) {
++@@ -5552,18 +5587,29 @@ static int ath10k_wmi_event_pdev_bss_chan_info(struct ath10k *ar,
++ 		goto exit;
++ 	}
++ 
+++	/* create delta result - might need fix of counters */
+++	survey_tmp.noise     = noise_floor;
+++	survey_tmp.time      = div_u64(total, cc_freq_hz);
+++	survey_tmp.time_busy = div_u64(busy, cc_freq_hz);
+++	survey_tmp.time_rx   = div_u64(rx_bss, cc_freq_hz);
+++	survey_tmp.time_tx   = div_u64(tx, cc_freq_hz);
+++	survey_tmp.filled    = (SURVEY_INFO_NOISE_DBM |
+++				SURVEY_INFO_TIME |
+++				SURVEY_INFO_TIME_BUSY |
+++				SURVEY_INFO_TIME_RX |
+++				SURVEY_INFO_TIME_TX);
+++
+++	ath10k_clean_survey(ar, &survey_tmp, idx, total, busy);
+++
+++	/* create accumulated result */
++ 	survey = &ar->survey[idx];
++ 
++-	survey->noise     = noise_floor;
++-	survey->time      = div_u64(total, cc_freq_hz);
++-	survey->time_busy = div_u64(busy, cc_freq_hz);
++-	survey->time_rx   = div_u64(rx_bss, cc_freq_hz);
++-	survey->time_tx   = div_u64(tx, cc_freq_hz);
++-	survey->filled   |= (SURVEY_INFO_NOISE_DBM |
++-			     SURVEY_INFO_TIME |
++-			     SURVEY_INFO_TIME_BUSY |
++-			     SURVEY_INFO_TIME_RX |
++-			     SURVEY_INFO_TIME_TX);
+++	survey->noise      = survey_tmp.noise;
+++	survey->time      += survey_tmp.time;
+++	survey->time_busy += survey_tmp.time_busy;
+++	survey->time_rx   += survey_tmp.time_rx;
+++	survey->time_tx   += survey_tmp.time_tx;
+++	survey->filled    |= survey_tmp.filled;
++ exit:
++ 	spin_unlock_bh(&ar->data_lock);
++ 	complete(&ar->bss_survey_done);
+diff --git a/package/kernel/mac80211/patches/ath/9586-ath10k-regularly-fetch-survey-counters.patch b/package/kernel/mac80211/patches/ath/9586-ath10k-regularly-fetch-survey-counters.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..ba7f9f3f2ccfac95eb68dbf09640af6906dcd11e
+--- /dev/null
++++ b/package/kernel/mac80211/patches/ath/9586-ath10k-regularly-fetch-survey-counters.patch
+@@ -0,0 +1,149 @@
++From: Sven Eckelmann <seckelmann@datto.com>
++Date: Wed, 18 Sep 2019 14:42:59 +0200
++Subject: ath10k: regularly fetch survey counters
++
++The survey counters from firmwares like 10.2.4 are not actually using the
++full 64 bit. Instead, they only use the lower 31 bit and overflow ever
++14-30s. The driver must frequently fetch the survey data and add it to the
++survey data storage to avoid this problem and to present meaningful values
++to the caller of .get_survey.
++
++It is assumed for now that only the current rx_channel retrieves relevant
++updates for the survey data. This should avoid that the bss channel survey
++request times out too often.
++
++Tested on QCA988x hw2.0 10.2.4-1.0-00043
++
++Signed-off-by: Sven Eckelmann <seckelmann@datto.com>
++
++diff --git a/drivers/net/wireless/ath/ath10k/core.c b/drivers/net/wireless/ath/ath10k/core.c
++index 3d6f4d6d7e87e7592686a2a020a0c8cee7201c05..b11255f972a01bd9bad1c0a0e43f30c7fe843bcf 100644
++--- a/drivers/net/wireless/ath/ath10k/core.c
+++++ b/drivers/net/wireless/ath/ath10k/core.c
++@@ -2466,8 +2466,14 @@ int ath10k_core_start(struct ath10k *ar, enum ath10k_firmware_mode mode,
++ 	if (status)
++ 		goto err_hif_stop;
++ 
+++	status = ath10k_survey_start(ar);
+++	if (status)
+++		goto err_debug_stop;
+++
++ 	return 0;
++ 
+++err_debug_stop:
+++	ath10k_debug_stop(ar);
++ err_hif_stop:
++ 	ath10k_hif_stop(ar);
++ err_htt_rx_detach:
++@@ -2507,6 +2513,7 @@ int ath10k_wait_for_suspend(struct ath10k *ar, u32 suspend_opt)
++ void ath10k_core_stop(struct ath10k *ar)
++ {
++ 	lockdep_assert_held(&ar->conf_mutex);
+++	ath10k_survey_stop(ar);
++ 	ath10k_debug_stop(ar);
++ 
++ 	/* try to suspend target */
++@@ -2871,6 +2878,7 @@ struct ath10k *ath10k_core_create(size_t priv_size, struct device *dev,
++ 	init_completion(&ar->bss_survey_done);
++ 
++ 	INIT_DELAYED_WORK(&ar->scan.timeout, ath10k_scan_timeout_work);
+++	INIT_DELAYED_WORK(&ar->survey_dwork, ath10k_survey_dwork);
++ 
++ 	ar->workqueue = create_singlethread_workqueue("ath10k_wq");
++ 	if (!ar->workqueue)
++diff --git a/drivers/net/wireless/ath/ath10k/core.h b/drivers/net/wireless/ath/ath10k/core.h
++index d937ec987b28be5db0dee8e9c757ca414cf7a205..9581a9cfd2b51ff71c6e99ae616a4dc2ca95926d 100644
++--- a/drivers/net/wireless/ath/ath10k/core.h
+++++ b/drivers/net/wireless/ath/ath10k/core.h
++@@ -1059,6 +1059,7 @@ struct ath10k {
++ 	struct survey_info survey[ATH10K_NUM_CHANS];
++ 	u64 survey_last_total_cc[ATH10K_NUM_CHANS];
++ 	u64 survey_last_busy_cc[ATH10K_NUM_CHANS];
+++	struct delayed_work survey_dwork;
++ 
++ 	/* Channel info events are expected to come in pairs without and with
++ 	 * COMPLETE flag set respectively for each channel visit during scan.
++diff --git a/drivers/net/wireless/ath/ath10k/mac.c b/drivers/net/wireless/ath/ath10k/mac.c
++index 06b1ccbdb11883c31a3a67d2d0187307a60d2f6d..ddd96cbc0aa84663f149c64cc7a4e8a36068d530 100644
++--- a/drivers/net/wireless/ath/ath10k/mac.c
+++++ b/drivers/net/wireless/ath/ath10k/mac.c
++@@ -36,6 +36,9 @@
++ #include "wow.h"
++ #include "leds.h"
++ 
+++/* ms */
+++#define ATH10K_SURVEY_INTERVAL 10000
+++
++ /*********/
++ /* Rates */
++ /*********/
++@@ -6985,6 +6988,55 @@ ath10k_mac_update_bss_chan_survey(struct ath10k *ar,
++ 	}
++ }
++ 
+++static void ath10k_request_survey(struct ath10k *ar)
+++{
+++	lockdep_assert_held(&ar->conf_mutex);
+++
+++	if (ar->state != ATH10K_STATE_ON)
+++		return;
+++
+++	if (!ar->rx_channel)
+++		return;
+++
+++	ath10k_mac_update_bss_chan_survey(ar, ar->rx_channel);
+++}
+++
+++void ath10k_survey_dwork(struct work_struct *work)
+++{
+++	struct ath10k *ar = container_of(work, struct ath10k,
+++					 survey_dwork.work);
+++
+++	mutex_lock(&ar->conf_mutex);
+++	ath10k_request_survey(ar);
+++	mutex_unlock(&ar->conf_mutex);
+++
+++	queue_delayed_work(ar->workqueue, &ar->survey_dwork,
+++			   msecs_to_jiffies(ATH10K_SURVEY_INTERVAL));
+++}
+++
+++int ath10k_survey_start(struct ath10k *ar)
+++{
+++	lockdep_assert_held(&ar->conf_mutex);
+++
+++	if (ar->hw_params.cc_wraparound_type != ATH10K_HW_CC_WRAP_SHIFTED_ALL)
+++		return 0;
+++
+++	queue_delayed_work(ar->workqueue, &ar->survey_dwork,
+++			   msecs_to_jiffies(ATH10K_SURVEY_INTERVAL));
+++
+++	return 0;
+++}
+++
+++void ath10k_survey_stop(struct ath10k *ar)
+++{
+++	lockdep_assert_held(&ar->conf_mutex);
+++
+++	if (ar->hw_params.cc_wraparound_type != ATH10K_HW_CC_WRAP_SHIFTED_ALL)
+++		return;
+++
+++	cancel_delayed_work_sync(&ar->survey_dwork);
+++}
+++
++ static int ath10k_get_survey(struct ieee80211_hw *hw, int idx,
++ 			     struct survey_info *survey)
++ {
++diff --git a/drivers/net/wireless/ath/ath10k/mac.h b/drivers/net/wireless/ath/ath10k/mac.h
++index 81f8d6c0af353274ee87d49eb7e74052f2b830b0..017d28ab37e43f7bf2e4a51b11c485dd628b8efb 100644
++--- a/drivers/net/wireless/ath/ath10k/mac.h
+++++ b/drivers/net/wireless/ath/ath10k/mac.h
++@@ -51,6 +51,9 @@ void ath10k_offchan_tx_purge(struct ath10k *ar);
++ void ath10k_offchan_tx_work(struct work_struct *work);
++ void ath10k_mgmt_over_wmi_tx_purge(struct ath10k *ar);
++ void ath10k_mgmt_over_wmi_tx_work(struct work_struct *work);
+++void ath10k_survey_dwork(struct work_struct *work);
+++int ath10k_survey_start(struct ath10k *ar);
+++void ath10k_survey_stop(struct ath10k *ar);
++ void ath10k_halt(struct ath10k *ar);
++ void ath10k_mac_vif_beacon_free(struct ath10k_vif *arvif);
++ void ath10k_drain_tx(struct ath10k *ar);
