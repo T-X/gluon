@@ -1,6 +1,6 @@
 From: Linus Lüssing <ll@simonwunderlich.de>
 Date: Wed, 5 Feb 2020 20:10:43 +0100
-Subject: ath10k: increase rx buffer size to 2048
+Subject: mac80211: ath10k: increase rx buffer size to 2048
 
 Before, only frames with a maximum size of 1528 bytes could be
 transmitted between two 802.11s nodes.
@@ -21,13 +21,16 @@ Link: https://github.com/greearb/ath10k-ct/issues/89
 Link: https://github.com/greearb/ath10k-ct/commit/9e5ab25027e0971fa24ccf93373324c08c4e992d
 Cc: Ben Greear <greearb@candelatech.com>
 Signed-off-by: Linus Lüssing <ll@simonwunderlich.de>
+Signed-off-by: Sven Eckelmann <sven@narfation.org>
 
-diff --git a/package/kernel/mac80211/patches/ath/980-ath10k-increase-rx-buffer-size-to-2048.patch b/package/kernel/mac80211/patches/ath/980-ath10k-increase-rx-buffer-size-to-2048.patch
+Forwarded: https://github.com/openwrt/openwrt/pull/2959
+
+diff --git a/package/kernel/mac80211/patches/ath/922-ath10k-increase-rx-buffer-size-to-2048.patch b/package/kernel/mac80211/patches/ath/922-ath10k-increase-rx-buffer-size-to-2048.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..a24f3e249ab533165ac4cff46518fe815d7e22a8
+index 0000000000000000000000000000000000000000..f7c842f428986130002922b68daf3d29b096ddbd
 --- /dev/null
-+++ b/package/kernel/mac80211/patches/ath/980-ath10k-increase-rx-buffer-size-to-2048.patch
-@@ -0,0 +1,39 @@
++++ b/package/kernel/mac80211/patches/ath/922-ath10k-increase-rx-buffer-size-to-2048.patch
+@@ -0,0 +1,37 @@
 +From: Linus Lüssing <ll@simonwunderlich.de>
 +Date: Wed, 5 Feb 2020 20:10:43 +0100
 +Subject: ath10k: increase rx buffer size to 2048
@@ -54,8 +57,6 @@ index 0000000000000000000000000000000000000000..a24f3e249ab533165ac4cff46518fe81
 +
 +Forwarded: https://patchwork.kernel.org/patch/11367055/
 +
-+diff --git a/drivers/net/wireless/ath/ath10k/htt.h b/drivers/net/wireless/ath/ath10k/htt.h
-+index 694af31d1e675c731780b678247b5c085c2114f7..b809ac35a6027155fb282e147c2b989154c6125e 100644
 +--- a/drivers/net/wireless/ath/ath10k/htt.h
 ++++ b/drivers/net/wireless/ath/ath10k/htt.h
 +@@ -2004,7 +2004,7 @@ struct htt_rx_desc {
