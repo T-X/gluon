@@ -43,7 +43,7 @@ config '# CONFIG_BATMAN_ADV_MCAST is not set'
 
 config 'CONFIG_PACKAGE_ATH_DEBUG=y'
 
-if env.GLUON_WLAN_MESH ~= 'ramips-rt305x' then
+if env.GLUON_TARGET ~= 'ramips-rt305x' and env.GLUON_TARGET ~= 'ar71xx-tiny' then
        try_config 'CONFIG_TARGET_SQUASHFS_BLOCK_SIZE=64'
 end
 
