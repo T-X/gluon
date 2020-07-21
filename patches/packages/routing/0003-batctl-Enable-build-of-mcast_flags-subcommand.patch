@@ -1,0 +1,36 @@
+From: Sven Eckelmann <sven@narfation.org>
+Date: Tue, 21 Jul 2020 22:29:33 +0200
+Subject: batctl: Enable build of mcast_flags subcommand
+
+The mcast_flags subcommand allows to query the mcast_flags of the current
+device and of the seen originators. It should be enabled for the default
+and full variants. But the configuration string wasn't correctly included
+in the list when the variants were prepared and thus disabled in all
+variants.
+
+Reported-by: Linus Lüssing <linus.luessing@c0d3.blue>
+Fixes: 129986825219 ("batctl: Provide different variants")
+Signed-off-by: Sven Eckelmann <sven@narfation.org>
+
+diff --git a/batctl/Makefile b/batctl/Makefile
+index 47d6b7850be22634176954af04161fe366e816cf..2772b1cc40aaac08a3a9bd27bf94b9503eea9705 100644
+--- a/batctl/Makefile
++++ b/batctl/Makefile
+@@ -10,7 +10,7 @@ include $(TOPDIR)/rules.mk
+ PKG_NAME:=batctl
+ 
+ PKG_VERSION:=2019.2
+-PKG_RELEASE:=4
++PKG_RELEASE:=6
+ PKG_HASH:=fb656208ff7d4cd8b1b422f60c9e6d8747302a347cbf6c199d7afa9b80f80ea3
+ 
+ PKG_SOURCE:=$(PKG_NAME)-$(PKG_VERSION).tar.gz
+@@ -167,7 +167,7 @@ config-tables := \
+ 	claimtable \
+ 	dat_cache \
+ 	gateways \
+-	loglevel \
++	mcast_flags \
+ 	nc_nodes \
+ 	neighbors \
+ 	originators \
