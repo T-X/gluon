@@ -19,7 +19,7 @@ index 64aac41b4d2ce777f587967ae00a6946ff5bc820..8dde01a6504b83475527c7b9b5b2c297
  		  Enables support for Dynamic ACK estimation, which allows the fastest possible speed
  		  at any distance automatically by increasing/decreasing the max frame ACK time for
 diff --git a/package/kernel/mac80211/files/lib/netifd/wireless/mac80211.sh b/package/kernel/mac80211/files/lib/netifd/wireless/mac80211.sh
-index 634aadcee949bd1c3ad9963d01d9eb444250aa0b..5520c7cbe2ea10bdb618839b8ff2766b7fde0668 100644
+index 36aebbb2ccfec2137d5d260fe2111d77f531ddec..a6643948b19753bb10641ae43caed4c6ecac43d4 100644
 --- a/package/kernel/mac80211/files/lib/netifd/wireless/mac80211.sh
 +++ b/package/kernel/mac80211/files/lib/netifd/wireless/mac80211.sh
 @@ -761,7 +761,6 @@ drv_mac80211_setup() {
