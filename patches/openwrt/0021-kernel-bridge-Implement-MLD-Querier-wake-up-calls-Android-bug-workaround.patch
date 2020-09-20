@@ -1967,15 +1967,15 @@ index d54ede9efda0a3ffd84e9a0c49dc410a01737d82..15b50523bf55d9a77fc1655ec6ba6ffd
  CONFIG_BRIDGE_VLAN_FILTERING=y
 diff --git a/target/linux/generic/pending-4.14/151-bridge-Implement-MLD-Querier-wake-up-calls-Android-b.patch b/target/linux/generic/pending-4.14/151-bridge-Implement-MLD-Querier-wake-up-calls-Android-b.patch
 new file mode 100644
-index 0000000000000000000000000000000000000000..c87ef7e84bcb465b5da83e2ca43fef2bab07ad4c
+index 0000000000000000000000000000000000000000..d02a4bc64deafa7fe2e17e9d17b259cea999c13b
 --- /dev/null
 +++ b/target/linux/generic/pending-4.14/151-bridge-Implement-MLD-Querier-wake-up-calls-Android-b.patch
 @@ -0,0 +1,632 @@
-+From 07eb9f1facb78cdccef456b6d8b83864a29073e5 Mon Sep 17 00:00:00 2001
++From 95479b1485191f0e7b95f9b37df0b39c751a5b56 Mon Sep 17 00:00:00 2001
 +From: =?UTF-8?q?Linus=20L=C3=BCssing?= <linus.luessing@c0d3.blue>
 +Date: Mon, 29 Jun 2020 19:04:05 +0200
-+Subject: [PATCH] bridge: Implement MLD Querier wake-up calls / Android
-+ bug workaround
++Subject: [PATCH] bridge: Implement MLD Querier wake-up calls / Android bug
++ workaround
 +MIME-Version: 1.0
 +Content-Type: text/plain; charset=UTF-8
 +Content-Transfer-Encoding: 8bit
@@ -2120,7 +2120,7 @@ index 0000000000000000000000000000000000000000..c87ef7e84bcb465b5da83e2ca43fef2b
 + 		if (now != dst->used)
 + 			dst->used = now;
 +diff --git a/net/bridge/br_multicast.c b/net/bridge/br_multicast.c
-+index 779af4efea27..1f9644004aaa 100644
++index 779af4efea27..6d8d1cf2ddc6 100644
 +--- a/net/bridge/br_multicast.c
 ++++ b/net/bridge/br_multicast.c
 +@@ -463,10 +463,11 @@ static struct sk_buff *br_ip4_multicast_alloc_query(struct net_bridge *br,
@@ -2402,7 +2402,7 @@ index 0000000000000000000000000000000000000000..c87ef7e84bcb465b5da83e2ca43fef2b
 ++
 ++	skb_set_transport_header(skb, offset);
 ++
-++	if (ipv6_mc_check_icmpv6 < 0)
+++	if (ipv6_mc_check_icmpv6(skb) < 0)
 ++		return false;
 ++
 ++	icmp6h = (struct icmp6hdr *)skb_transport_header(skb);
@@ -2601,5 +2601,5 @@ index 0000000000000000000000000000000000000000..c87ef7e84bcb465b5da83e2ca43fef2b
 + 	&brport_attr_proxyarp,
 + 	&brport_attr_proxyarp_wifi,
 +-- 
-+2.27.0
++2.28.0.rc1
 +
