@@ -1,0 +1,56 @@
+#!/bin/sh
+
+[ -z "$IFNAME" ] && exit 0
+
+if [ -z "$1" ]; then
+	SOCKETSSUB="mesh"
+else
+	SOCKETSSUB="$1"
+fi
+
+. /lib/functions.sh
+
+lock /var/lock/gluon_bpfcountd.lock
+
+BPFCOUNTD_RUN=/var/run/bpfcountd
+mkdir -p "${BPFCOUNTD_RUN}/gluon-sockets/$SOCKETSSUB"
+
+export UCI_CONFIG_DIR=${BPFCOUNTD_RUN}/gluon-config
+mkdir -p "${UCI_CONFIG_DIR}"
+touch "${UCI_CONFIG_DIR}/bpfcountd"
+
+
+# Skip anything which might be unicast payload to avoid
+# a noticeable performance impact:
+# -> a batadv unicast packet with an unicast destination in
+#    the inner ethernet header; all batadv unicast fragments
+# Note: batadv unicast fragments might contain a multicast
+# packet, too (though unlikely, usually they are smaller
+# than MTU).
+PREFILTER_CLIENT="not (ip and not ip multicast and not icmp) and not (ip6 and not ip6 multicast and not icmp6 and not ip6 proto 0)"
+PREFILTER_MESH="not (batadv 15 unicast and not ether multicast) and not batadv 15 unicast_frag"
+PREFILTER="${PREFILTER_CLIENT} and ${PREFILTER_MESH}"
+
+SECTION_IN=$(uci -c ${UCI_CONFIG_DIR} add bpfcountd bpfcountd)
+SECTION_OUT=$(uci -c ${UCI_CONFIG_DIR} add bpfcountd bpfcountd)
+uci -c ${UCI_CONFIG_DIR} batch <<-EOF
+	set bpfcountd.${SECTION_IN}.ifname=${IFNAME}
+	set bpfcountd.${SECTION_IN}.prefilter="inbound and (${PREFILTER})"
+	set bpfcountd.${SECTION_IN}.filterfile='/lib/gluon/bpfcountd/mesh.filters'
+	set bpfcountd.${SECTION_IN}.disabled='0'
+
+	set bpfcountd.${SECTION_OUT}.ifname=${IFNAME}
+	set bpfcountd.${SECTION_OUT}.prefilter="outbound and (${PREFILTER})"
+	set bpfcountd.${SECTION_OUT}.filterfile='/lib/gluon/bpfcountd/mesh.filters'
+	set bpfcountd.${SECTION_OUT}.disabled='0'
+
+	commit bpfcountd
+EOF
+
+ln -s "../../bpfcountd.${IFNAME}.in.sock" "${BPFCOUNTD_RUN}/gluon-sockets/$SOCKETSSUB/bpfcountd.${IFNAME}.in.sock"
+ln -s "../../bpfcountd.${IFNAME}.out.sock" "${BPFCOUNTD_RUN}/gluon-sockets/$SOCKETSSUB/bpfcountd.${IFNAME}.out.sock"
+
+/etc/init.d/bpfcountd start ${IFNAME}.in ${SECTION_IN}
+/etc/init.d/bpfcountd start ${IFNAME}.out ${SECTION_OUT}
+
+lock -u /var/lock/gluon_bpfcountd.lock

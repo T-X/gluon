@@ -1,0 +1,32 @@
+# TODOs
+
+* currently on mesh we are explicitly only tracking
+  multicast in a batadv unicast packet - which
+  excludes unicast ARP or ICMP - is that what we want?
+* remove bpfcount-json (was implemented for initial
+  prototyping, will be replaced by gluon-neighbour-info
+  - though gluon-neighbor-info currently has the issue
+  of output being limited to 8193 bytes)
+  -> leave it instead? now accepts up to 64k
+* check if there is a size limit for a respondd type
+  -> 64k (probably, UDP datagram size limit)
+* add documentation to Gluon
+* move bpfcountd to packages repository
+* get batman-adv libpcap patch accepted/merged upstream:
+  - https://github.com/the-tcpdump-group/libpcap/pull/980
+  and into OpenWrt
+
+Boni:
+* extend libpcap or write another tool which counts
+  packets and packet bytes in kernel space, without
+  copying packets to userspace, for instance with eBPF
+  - but it should still accept a string in the BPF
+  pcap filter syntax for ease of use, without needing
+  to write C code for each filter rule (which eBPF
+  would need as is?)
+* maybe extend /etc/init.d/bpfcountd to accept a list
+  of "list ifname", too?
+* enhance bpfcountd rule syntax to shrink size of and
+  ease updating filter files (implement cartesian
+  products and real, non-evaluated templates
+  instead of the "%" workaround in bpfcount-json)

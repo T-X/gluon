@@ -1,0 +1,85 @@
+#!/usr/bin/lua
+
+require "socket"
+require "socket.unix"
+
+local rundir = "/var/run/bpfcountd"
+
+local pfile = assert(io.popen(("cd '%s'; find './' -mindepth 1 -maxdepth 1 -type s"):format(rundir), 'r'))
+local list = pfile:lines()
+
+io.write("{\n")
+
+local sockfile
+local firstsocket = true
+
+for sockfile in list do
+	local name
+	local usock
+	local connected
+	local rule
+
+	sockfile = string.gsub(sockfile, "\n$", "")
+	sockfile = string.gsub(sockfile, "^./", "")
+
+	name = string.gsub(sockfile, '^bpfcountd\.', "")
+	name = string.gsub(name, '\.sock$', "")
+
+	usock = socket.unix()
+	connected = usock:connect(rundir .. "/" .. sockfile)
+
+	if connected then
+		rule = usock:receive()
+
+		if firstsocket then
+			firstsocket = false
+		else
+			print(",")
+		end
+
+		print('  "' .. name .. '": [')
+	else
+		rule = nil
+	end
+
+	while rule do
+		local rulefin
+		local label
+		local bytes
+		local packets
+
+		label = string.gsub(rule, ':[0-9]*:[0-9]*$', '')
+		bytes = string.gsub(rule, ':[0-9]*$', '')
+		bytes = string.gsub(bytes, '^.*:', '')
+		packets = string.gsub(rule, '^.*:.*:', '')
+
+		rule = usock:receive()
+		while rule and string.sub(rule, 1, 1) == "%" do
+			rule = usock:receive()
+		end
+
+		if rule then
+			rulefin = ','
+		else
+			rulefin = ''
+		end
+
+		print('    { "rule": "' .. label ..
+                      '", "bytes": ' .. bytes ..
+		      ', "packets": ' .. packets ..
+		      ' }' .. rulefin )
+	end
+
+	if connected then
+		io.write("  ]")
+		usock:close()
+	end
+end
+
+pfile:close()
+
+if not firstsocket then
+	print()
+end
+
+io.write("}\n")

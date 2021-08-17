@@ -1,0 +1,30 @@
+[ "$INTERFACE" = "client" ] || exit 0
+
+bpfcountd_start() {
+	local iface
+
+	for iface in /sys/class/net/$DEVICE/brif/*; do
+		IFNAME="${iface##*/}" /lib/gluon/core/mesh/setup.d/40-bpfcountd "clients"
+	done
+	IFNAME="$DEVICE" /lib/gluon/core/mesh/setup.d/40-bpfcountd "clients"
+}
+
+bpfcountd_stop() {
+	local iface
+
+	for iface in $(uci get network.client.ifname); do
+		IFNAME="$iface" /lib/gluon/core/mesh/teardown.d/40-bpfcountd
+	done
+	IFNAME="br-client" /lib/gluon/core/mesh/teardown.d/40-bpfcountd
+}
+
+case "$ACTION" in
+  "ifup")
+	bpfcountd_start
+	;;
+  "ifdown")
+	bpfcountd_stop
+	;;
+  *)
+	;;
+esac
