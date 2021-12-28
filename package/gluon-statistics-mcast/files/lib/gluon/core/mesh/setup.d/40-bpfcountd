@@ -22,13 +22,20 @@ touch "${UCI_CONFIG_DIR}/bpfcountd"
 
 # Skip anything which might be unicast payload to avoid
 # a noticeable performance impact:
-# -> a batadv unicast packet with an unicast destination in
+# -> a batadv unicast packet with an IP unicast destination in
 #    the inner ethernet header; all batadv unicast fragments
 # Note: batadv unicast fragments might contain a multicast
 # packet, too (though unlikely, usually they are smaller
 # than MTU).
-PREFILTER_CLIENT="not (ip and not ip multicast and not icmp) and not (ip6 and not ip6 multicast and not icmp6 and not ip6 proto 0)"
-PREFILTER_MESH="not (batadv 15 unicast and not ether multicast) and not batadv 15 unicast_frag"
+
+# All IP packets with a unicast destination, except
+# ICMP or PIM (103)
+PREFILTER_IP4_UC="(ip and not ip multicast and not igmp and not ip proto 103)"
+PREFILTER_IP6_UC="(ip6 and not ip6 multicast and not ip6 proto 0 and not ip6 proto 103)"
+PREFILTER_IP_UC="(${PREFILTER_IP4_UC} or ${PREFILTER_IP6_UC})"
+
+PREFILTER_CLIENT="not ${PREFILTER_IP_UC}"
+PREFILTER_MESH="not (batadv 15 unicast and ${PREFILTER_IP_UC}) and not batadv 15 unicast_frag"
 PREFILTER="${PREFILTER_CLIENT} and ${PREFILTER_MESH}"
 
 SECTION_IN=$(uci -c ${UCI_CONFIG_DIR} add bpfcountd bpfcountd)

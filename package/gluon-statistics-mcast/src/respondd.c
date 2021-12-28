@@ -447,8 +447,8 @@ err1:
  * Example output:
  *
  * {
- *   "mesh-vpn": {
- *     "mesh": {
+ *   "mesh": {
+ *     "mesh-vpn": {
  *       "BAT-BCAST-ARP": {
  *         "in": {
  *           "bytes": 12345,
